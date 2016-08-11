@@ -28,6 +28,76 @@ describe('authentication', () => {
 
     const password = 'some_not_random_password_that_is_also_long_enough';
 
+    it('times out when hello is delayed', (done) => {
+
+        const server = new Hapi.Server();
+        server.connection();
+
+        server.auth.scheme('custom', internals.implementation);
+        server.auth.strategy('default', 'custom', true);
+
+        server.register({ register: Nes, options: { auth: { timeout: 100 } } }, (err) => {
+
+            expect(err).to.not.exist();
+
+            server.route({
+                method: 'GET',
+                path: '/',
+                handler: function (request, reply) {
+
+                    return reply('hello');
+                }
+            });
+
+            server.start((err) => {
+
+                expect(err).to.not.exist();
+                const client = new Nes.Client('http://localhost:' + server.info.port);
+                client._hello = Hoek.ignore;
+                client.onError = Hoek.ignore;
+                client.onDisconnect = () => {
+
+                    server.stop(done);
+                };
+
+                client.connect({ auth: { headers: { authorization: 'Custom john' } } }, Hoek.ignore);
+            });
+        });
+    });
+
+    it('disables timeout when hello is delayed', (done) => {
+
+        const server = new Hapi.Server();
+        server.connection();
+
+        server.auth.scheme('custom', internals.implementation);
+        server.auth.strategy('default', 'custom', true);
+
+        server.register({ register: Nes, options: { auth: { timeout: false } } }, (err) => {
+
+            expect(err).to.not.exist();
+
+            server.route({
+                method: 'GET',
+                path: '/',
+                handler: function (request, reply) {
+
+                    return reply('hello');
+                }
+            });
+
+            server.start((err) => {
+
+                expect(err).to.not.exist();
+                const client = new Nes.Client('http://localhost:' + server.info.port);
+                client._hello = Hoek.ignore;
+                client.onError = Hoek.ignore;
+                setTimeout(() => server.stop(done), 100);
+                client.connect({ auth: { headers: { authorization: 'Custom john' } } }, Hoek.ignore);
+            });
+        });
+    });
+
     describe('cookie', () => {
 
         it('protects an endpoint', (done) => {
@@ -72,6 +142,56 @@ describe('authentication', () => {
                                 expect(statusCode).to.equal(200);
 
                                 client.disconnect();
+                                server.stop(done);
+                            });
+                        });
+                    });
+                });
+            });
+        });
+
+        it('limits connections per user', (done) => {
+
+            const server = new Hapi.Server();
+            server.connection();
+
+            server.register({ register: Nes, options: { auth: { type: 'cookie', maxConnectionsPerUser: 1, index: true } } }, (err) => {
+
+                expect(err).to.not.exist();
+
+                server.auth.scheme('custom', internals.implementation);
+                server.auth.strategy('default', 'custom', true);
+
+                server.route({
+                    method: 'GET',
+                    path: '/',
+                    handler: function (request, reply) {
+
+                        return reply('hello');
+                    }
+                });
+
+                server.start((err) => {
+
+                    expect(err).to.not.exist();
+                    server.inject({ url: '/nes/auth', headers: { authorization: 'Custom john' } }, (res) => {
+
+                        expect(res.result.status).to.equal('authenticated');
+
+                        const header = res.headers['set-cookie'][0];
+                        const cookie = header.match(/(?:[^\x00-\x20\(\)<>@\,;\:\\"\/\[\]\?\=\{\}\x7F]+)\s*=\s*(?:([^\x00-\x20\"\,\;\\\x7F]*))/);
+
+                        const client = new Nes.Client('http://localhost:' + server.info.port, { ws: { headers: { cookie: 'nes=' + cookie[1] } } });
+                        client.connect((err) => {
+
+                            expect(err).to.not.exist();
+                            const client2 = new Nes.Client('http://localhost:' + server.info.port, { ws: { headers: { cookie: 'nes=' + cookie[1] } } });
+                            client2.connect((err) => {
+
+                                expect(err).to.be.an.error('Too many connections for the authenticated user');
+
+                                client.disconnect();
+                                client2.disconnect();
                                 server.stop(done);
                             });
                         });
@@ -581,6 +701,48 @@ describe('authentication', () => {
             });
         });
 
+        it('limits number of connections per user', (done) => {
+
+            const server = new Hapi.Server();
+            server.connection();
+
+            server.auth.scheme('custom', internals.implementation);
+            server.auth.strategy('default', 'custom', true);
+
+            server.register({ register: Nes, options: { auth: { index: true, maxConnectionsPerUser: 1 } } }, (err) => {
+
+                expect(err).to.not.exist();
+
+                server.route({
+                    method: 'GET',
+                    path: '/',
+                    handler: function (request, reply) {
+
+                        return reply('hello');
+                    }
+                });
+
+                server.start((err) => {
+
+                    expect(err).to.not.exist();
+                    const client = new Nes.Client('http://localhost:' + server.info.port);
+                    client.connect({ auth: { headers: { authorization: 'Custom john' } } }, (err) => {
+
+                        expect(err).to.not.exist();
+                        const client2 = new Nes.Client('http://localhost:' + server.info.port);
+                        client2.connect({ auth: { headers: { authorization: 'Custom john' } } }, (err) => {
+
+                            expect(err).to.be.an.error('Too many connections for the authenticated user');
+
+                            client.disconnect();
+                            client2.disconnect();
+                            server.stop(done);
+                        });
+                    });
+                });
+            });
+        });
+
         it('protects an endpoint with prefix', (done) => {
 
             const server = new Hapi.Server();
@@ -718,7 +880,6 @@ describe('authentication', () => {
                         expect(err).to.exist();
                         expect(c).to.equal(0);
 
-                        client._ws.close();
                         setTimeout(() => {
 
                             expect(c).to.equal(0);
@@ -808,7 +969,7 @@ describe('authentication', () => {
                         expect(err).to.not.exist();
                         const handler = (update) => {
 
-                            expect(client.subscriptions()).to.deep.equal(['/']);
+                            expect(client.subscriptions()).to.equal(['/']);
                             expect(update).to.equal('heya');
                             client.disconnect();
                             server.stop(done);
@@ -838,7 +999,7 @@ describe('authentication', () => {
 
                 const filter = function (path, update, options, next) {
 
-                    return next(options.credentials.id === update);
+                    return next(options.credentials.user === update);
                 };
 
                 server.subscription('/', { filter: filter });
@@ -895,7 +1056,7 @@ describe('authentication', () => {
 
                             expect(err).to.exist();
                             expect(err.message).to.equal('Authentication required to subscribe');
-                            expect(client.subscriptions()).to.deep.equal([]);
+                            expect(client.subscriptions()).to.equal([]);
 
                             client.disconnect();
                             server.stop(done);
@@ -929,7 +1090,7 @@ describe('authentication', () => {
                         const handler = (update) => {
 
                             expect(update).to.equal('heya');
-                            expect(client.subscriptions()).to.deep.equal(['/']);
+                            expect(client.subscriptions()).to.equal(['/']);
 
                             client.disconnect();
                             server.stop(done);
@@ -969,7 +1130,7 @@ describe('authentication', () => {
                         const handler = (update) => {
 
                             expect(update).to.equal('heya');
-                            expect(client.subscriptions()).to.deep.equal(['/']);
+                            expect(client.subscriptions()).to.equal(['/']);
 
                             client.disconnect();
                             server.stop(done);
@@ -993,7 +1154,7 @@ describe('authentication', () => {
             server.auth.scheme('custom', internals.implementation);
             server.auth.strategy('default', 'custom', true);
 
-            server.register({ register: Nes, options: { auth: { type: 'direct', password: password } } }, (err) => {
+            server.register({ register: Nes, options: { auth: { type: 'direct', password: password, index: true } } }, (err) => {
 
                 expect(err).to.not.exist();
 
@@ -1009,7 +1170,7 @@ describe('authentication', () => {
                         const handler = (update) => {
 
                             expect(update).to.equal('heya');
-                            expect(client.subscriptions()).to.deep.equal(['/']);
+                            expect(client.subscriptions()).to.equal(['/']);
 
                             client.disconnect();
                             server.stop(done);
@@ -1033,7 +1194,7 @@ describe('authentication', () => {
             server.auth.scheme('custom', internals.implementation);
             server.auth.strategy('default', 'custom', true);
 
-            server.register({ register: Nes, options: { auth: { type: 'direct', password: password } } }, (err) => {
+            server.register({ register: Nes, options: { auth: { type: 'direct', password: password, index: true } } }, (err) => {
 
                 expect(err).to.not.exist();
 
@@ -1049,7 +1210,7 @@ describe('authentication', () => {
                         const handler = (update) => {
 
                             expect(update).to.equal('heya');
-                            expect(client.subscriptions()).to.deep.equal(['/']);
+                            expect(client.subscriptions()).to.equal(['/']);
 
                             client.disconnect();
                             server.stop(done);
@@ -1091,7 +1252,7 @@ describe('authentication', () => {
 
                             expect(err).to.exist();
                             expect(err.message).to.equal('User credentials cannot be used on an application subscription');
-                            expect(client.subscriptions()).to.deep.equal([]);
+                            expect(client.subscriptions()).to.equal([]);
 
                             client.disconnect();
                             server.stop(done);
@@ -1127,7 +1288,7 @@ describe('authentication', () => {
 
                             expect(err).to.exist();
                             expect(err.message).to.equal('Application credentials cannot be used on a user subscription');
-                            expect(client.subscriptions()).to.deep.equal([]);
+                            expect(client.subscriptions()).to.equal([]);
 
                             client.disconnect();
                             server.stop(done);
@@ -1161,7 +1322,7 @@ describe('authentication', () => {
                         const handler = (update) => {
 
                             expect(update).to.equal('heya');
-                            expect(client.subscriptions()).to.deep.equal(['/']);
+                            expect(client.subscriptions()).to.equal(['/']);
 
                             client.disconnect();
                             server.stop(done);
@@ -1201,7 +1362,7 @@ describe('authentication', () => {
                         const handler = (update) => {
 
                             expect(update).to.equal('heya');
-                            expect(client.subscriptions()).to.deep.equal(['/']);
+                            expect(client.subscriptions()).to.equal(['/']);
 
                             client.disconnect();
                             server.stop(done);
@@ -1241,7 +1402,7 @@ describe('authentication', () => {
                         const handler = (update) => {
 
                             expect(update).to.equal('heya');
-                            expect(client.subscriptions()).to.deep.equal(['/']);
+                            expect(client.subscriptions()).to.equal(['/']);
 
                             client.disconnect();
                             server.stop(done);
@@ -1281,7 +1442,7 @@ describe('authentication', () => {
                         const handler = (update) => {
 
                             expect(update).to.equal('heya');
-                            expect(client.subscriptions()).to.deep.equal(['/']);
+                            expect(client.subscriptions()).to.equal(['/']);
 
                             client.disconnect();
                             server.stop(done);
@@ -1321,7 +1482,7 @@ describe('authentication', () => {
                         const handler = (update) => {
 
                             expect(update).to.equal('heya');
-                            expect(client.subscriptions()).to.deep.equal(['/5']);
+                            expect(client.subscriptions()).to.equal(['/5']);
 
                             client.disconnect();
                             server.stop(done);
@@ -1362,7 +1523,7 @@ describe('authentication', () => {
 
                             expect(err).to.exist();
                             expect(err.message).to.equal('Insufficient scope to subscribe, expected any of: b');
-                            expect(client.subscriptions()).to.deep.equal([]);
+                            expect(client.subscriptions()).to.equal([]);
 
                             client.disconnect();
                             server.stop(done);
@@ -1397,7 +1558,7 @@ describe('authentication', () => {
 
                             expect(err).to.exist();
                             expect(err.message).to.equal('Insufficient scope to subscribe, expected any of: x');
-                            expect(client.subscriptions()).to.deep.equal([]);
+                            expect(client.subscriptions()).to.equal([]);
 
                             client.disconnect();
                             server.stop(done);
@@ -1432,7 +1593,7 @@ describe('authentication', () => {
 
                             expect(err).to.exist();
                             expect(err.message).to.equal('Insufficient scope to subscribe, expected any of: x');
-                            expect(client.subscriptions()).to.deep.equal([]);
+                            expect(client.subscriptions()).to.equal([]);
 
                             client.disconnect();
                             server.stop(done);
@@ -1449,16 +1610,15 @@ internals.implementation = function (server, options) {
 
     const users = {
         john: {
-            id: 'john',
-            user: true,
+            user: 'john',
             scope: 'a'
         },
         ed: {
-            id: 'ed',
+            user: 'ed',
             scope: ['a', 'b', 5]
         },
         app: {
-            id: 'app'
+            app: 'app'
         }
     };
 

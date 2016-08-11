@@ -1,10 +1,11 @@
-# 4.0.x API Reference
+# 6.2.x API Reference
 
 - [Registration](#registration)
 - [Server](#server)
-    - [`server.broadcast(message)`](#serverbroadcastmessage)
+    - [`server.broadcast(message, [options])`](#serverbroadcastmessage-options)
     - [`server.subscription(path, [options])`](#serversubscriptionpath-options)
-    - [`server.publish(path, message)`](#serverpublishpath-message)
+    - [`server.publish(path, message, [options])`](#serverpublishpath-message-options)
+    - [`server.eachSocket(each, [options])`](#servereachsocketeach-options)
 - [Socket](#socket)
     - [`socket.id`](#socketid)
     - [`socket.app`](#socketapp)
@@ -12,6 +13,7 @@
     - [`socket.disconnect()`](#socketdisconnect)
     - [`socket.send(message, [callback])`](#socketsendmessage-callback)
     - [`socket.publish(path, message, [callback])`](#socketpublishpath-message-callback)
+    - [`socket.revoke(path, message, [callback])`](#socketrevokepath-message-callback)
 - [Request](#request)
     - [`request.socket`](#requestsocket)
 - [Client](#client)
@@ -21,13 +23,14 @@
     - [`client.onDisconnect`](#clientondisconnect)
     - [`client.onUpdate`](#clientonupdate)
     - [`client.connect([options], callback)`](#clientconnectoptions-callback)
-    - [`client.disconnect()`](#clientdisconnect)
+    - [`client.disconnect([callback])`](#clientdisconnectcallback)
     - [`client.id`](#clientid)
     - [`client.request(options, callback)`](#clientrequestoptions-callback)
     - [`client.message(message, callback)`](#clientmessagemessage-callback)
     - [`client.subscribe(path, handler, callback)`](#clientsubscribepath-handler-callback)
-    - [`client.unsubscribe(path, [handler])`](#clientunsubscribepath-handler)
+    - [`client.unsubscribe(path, handler, callback)`](#clientunsubscribepath-handler-callback)
     - [`client.subscriptions()`](#clientsubscriptions)
+    - [`client.overrideReconnectionAuth(auth)`](#clientoverriderecinnectionauthauth)
     - [Errors](#errors)
 
 ## Registration
@@ -99,6 +102,13 @@ method. The plugin accepts the following optional registration options:
         - `domain` - the cookie domain when using type `'cookie'`. Defaults to no domain.
         - `ttl` - the cookie expiration milliseconds when using type `'cookie'`. Defaults to current
           session only.
+        - `index` - if `true`, authenticated socket with `user` property in `credentials` are mapped
+          for usage in [`server.broadcast()`](#serverbroadcastmessage-options) calls. Defaults to `false`.
+        - `timeout` - number of milliseconds after which a new connection is disconnected if authentication
+          is required but the connection has not yet sent a hello message. No timeout if set to `false`.
+          Defaults to `5000` (5 seconds).
+        - `maxConnectionsPerUser` - if specified, limits authenticated users to a maximum number of
+          client connections. Requires the `index` option enabled. Defaults to `false`.
 - `headers` - an optional array of header field names to include in server responses to the client.
   If set to `'*'` (without an array), allows all headers. Defaults to `null` (no headers).
 - `payload` - optional message payload settings where:
@@ -114,17 +124,23 @@ method. The plugin accepts the following optional registration options:
           (15 seconds).
         - `timeout` - timeout in milliseconds after a heartbeat is sent to the client and before the
           client is considered disconnected by the server. Defaults to `5000` (5 seconds).
+- `maxConnections` - if specified, limits the number of simultaneous client connections. Defaults to
+  `false`.
 
 ## Server
 
 The plugin decorates the server with a few new methods for interacting with the incoming WebSocket
 connections.
 
-### `server.broadcast(message)`
+### `server.broadcast(message, [options])`
 
 Sends a message to all connected clients where:
 - `message` - the message sent to the clients. Can be any type which can be safely converted to
   string using `JSON.stringify()`.
+- `options` - optional object with the following:
+    - `user` - optional user filter. When provided, the message will be sent only to authenticated
+      sockets with `credentials.user` equal to  `user`. Requires the `auth.index` options to be
+      configured to `true`.
 
 Note that in a multi server deployment, only the client connected to the current server will receive
 the message.
@@ -142,13 +158,17 @@ Declares a subscription path client can subscribe to where:
           contains path parameters.
         - `message` - the message being published.
         - `options` - additional information about the subscription and client:
+            - `socket` - the current socket being published to.
             - `credentials` - the client credentials if authenticated.
             - `params` - the parameters parsed from the publish message path if the subscription
               path contains parameters.
             - `internal` - the `internal` options data passed to the publish call, if defined.
-        - `next` - the continuation method using signature `function(isMatch)` where:
+        - `next` - the continuation method using signature `function(isMatch, [override])` where:
             - `isMatch` - a boolean to indicate if the published message should be sent to the
               current client where `true` means the message will be sent.
+            - `override` - an optional `message` to send to this `socket` instead of the published
+              one. Note that if you want to modify `message`, you must clone it first or the changes
+              will apply to all other sockets.
     - `auth` - the subscription authentication options with the following supported values:
         - `false` - no authentication required to subscribe.
         - a configuration object with the following optional keys:
@@ -162,6 +182,9 @@ Declares a subscription path client can subscribe to where:
                 - `'user'`
                 - `'app'`
                 - `'any'`
+            - `index` - if `true`, authenticated socket with `user` property in `credentials` are
+              mapped for usage in [`server.publish()`](#serverpublishpath-message-options) calls.
+              Defaults to `false`.
     - `onSubscribe` - a method called when a client subscribes to this subscription endpoint using
       the signature `function(socket, path, params, next)` where:
         - `socket` - the [`Socket`](#socket) object of the incoming connection.
@@ -173,11 +196,15 @@ Declares a subscription path client can subscribe to where:
             - `err` - if present, indicates the subscription request failed and the error will be
               passed back to the client.
     - `onUnsubscribe` - Callback called when a client unsubscribes from this subscription endpoint
-      using the signature `function(socket, path)` where:
+      using the signature `function(socket, path, params)` where:
         - `socket` - the [`Socket`](#socket) object of the incoming connection.
         - `path` - Path of the unsubscribed route.
+        - `params` - the parameters parsed from the subscription request path if the subscription
+          path definition contains parameters.
+        - `next` - the continuation method required to complete the unsubscribe request using the
+          signature `function()`.
 
-### `server.publish(path, message, options)`
+### `server.publish(path, message, [options])`
 
 Sends a message to all the subscribed clients where:
 - `path` - the subscription path. The path is matched first against the available subscriptions
@@ -190,16 +217,21 @@ Sends a message to all the subscribed clients where:
 - `options` - optional object that may include
     - `internal` - Internal data that is passed to `filter` and may be used to filter messages
       on data that is not sent to the client.
+    - `user` - optional user filter. When provided, the message will be sent only to authenticated
+      sockets with `credentials.user` equal to  `user`. Requires the subscription `auth.index`
+      options to be configured to `true`.
 
-
-### `server.eachSocket(each, options)`
+### `server.eachSocket(each, [options])`
 
 Iterates over all connected sockets, optionally filtering on those that have subscribed to
 a given subscription. This operation is synchronous.
 - `each` - Iteration callback in the form `function(socket)`.
 - `options` - Optional options object
     - `subscription` - When set to a string path, limits the results to sockets that are 
-      to that path.
+      subscribed to that path.
+    - `user` - optional user filter. When provided, the `each` method will be invoked with
+      authenticated sockets with `credentials.user` equal to  `user`. Requires the subscription
+      `auth.index` options to be configured to `true`.
 
 ## Socket
 
@@ -221,9 +253,11 @@ The socket authentication state if any. Similar to the normal **hapi** `request.
 - `credentials` - the authentication credentials used.
 - `artifacts` - authentication artifacts specific to the authentication strategy used.
 
-### `socket.disconnect()`
+### `socket.disconnect([callback])`
 
-Closes a client connection.
+Closes a client connection where:
+- `callback` - optional callback for when the connection is fully closed using the signature
+  `function()`.
 
 ### `socket.send(message, [callback])`
 
@@ -237,9 +271,20 @@ Sends a custom message to the client where:
 
 Sends a subscription update to a specific client where:
 - `path` - the subscription string. Note that if the client did not subscribe to the provided `path`,
-  the client will generate an error.
+  the client will ignore the update silently.
 - `message` - the message sent to the client. Can be any type which can be safely converted to
   string using `JSON.stringify()`.
+- `callback` - optional callback method using signature `function(err)` where:
+    - `err` - an error condition.
+
+### `socket.revoke(path, message, [callback])`
+
+Revokes a subscription and optionally includes a last update where:
+- `path` - the subscription string. Note that if the client is not subscribe to the provided `path`,
+  the client will ignore the it silently.
+- `message` - an optional last subscription update sent to the client. Can be any type which can be
+  safely converted to string using `JSON.stringify()`. Pass `null` to revoke the subscription without
+  sending a last update.
 - `callback` - optional callback method using signature `function(err)` where:
     - `err` - an error condition.
 
@@ -357,8 +402,11 @@ Subscribes to a server subscription where:
 - `path` - the requested subscription path. Paths are just like HTTP request paths (e.g.
   `'/item/5'` or `'/updates'` based on the paths supported by the server).
 - `handler` - the function used to receive subscription updates using the
-  signature `function(message)` where:
+  signature `function(message, flags)` where:
     - `message` - the subscription update sent by the server.
+    - `flags` - an object with the following optional flags:
+        - `revoked` - set to `true` when the message is the last update from the server due to
+          a subscription revocation.
 - `callback` - the callback function called when the subscription request was received by the server
   or failed to transmit using the signature `function(err)` where:
     - `err` - if present, indicates the subscription request has failed.
@@ -366,16 +414,27 @@ Subscribes to a server subscription where:
 Note that when `subscribe()` is called before the client connects, any server errors will be
 received via the `connect()` callback.
 
-### `client.unsubscribe(path, [handler])`
+### `client.unsubscribe(path, handler, callback)`
 
 Cancels a subscription where:
 - `path` - the subscription path used to subscribe.
-- `handler` - an optional handler used to remove a specific handler from a subscription.
-  Defaults to `null` which removes all existing handlers for the given path.
+- `handler` - remove a specific handler from a subscription or `null` to remove all handlers for
+  the given path.
+- `callback` - the callback function called when the subscription request was received by the server
+  or failed to transmit using the signature `function(err)` where:
+    - `err` - if present, indicates the request has failed.
 
 ### `client.subscriptions()`
 
 Returns an array of the current subscription paths.
+
+### `client.overrideReconnectionAuth(auth)`
+
+Sets or overrides the authentication credentials used to reconnect the client on disconnect when
+the client is configured to automatically reconnect, where:
+- `auth` - same as the `auth` option passed to [`client.connect()`](#clientconnectoptions-callback).
+
+Returns `true` if reconnection is enabled, otherwise `false` (in which case the method was ignored).
 
 ### Errors
 

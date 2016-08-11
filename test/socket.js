@@ -278,7 +278,7 @@ describe('Socket', () => {
 
                 expect(err).to.not.exist();
 
-                server.on('log', (event, tags) => {
+                server.once('log', (event, tags) => {
 
                     expect(event.data).to.equal('other');
                     client.disconnect();
@@ -295,9 +295,89 @@ describe('Socket', () => {
                         const a = { id: 1, type: 'other' };
                         a.c = a;                    // Circular reference
 
-                        server.connections[0].plugins.nes._listener._sockets.forEach((socket) => {
+                        server.connections[0].plugins.nes._listener._sockets._forEach((socket) => {
 
-                            socket._send(a, Hoek.ignore);
+                            socket._send(a, null, Hoek.ignore);
+                        });
+                    });
+                });
+            });
+        });
+
+        it('reuses previously stringified value', (done) => {
+
+            const server = new Hapi.Server();
+            server.connection();
+            server.register({ register: Nes, options: { auth: false } }, (err) => {
+
+                expect(err).to.not.exist();
+
+                server.route({
+                    method: 'GET',
+                    path: '/',
+                    handler: function (request, reply) {
+
+                        return reply(JSON.stringify({ a: 1, b: 2 })).type('application/json');
+                    }
+                });
+
+                server.start((err) => {
+
+                    expect(err).to.not.exist();
+                    const client = new Nes.Client('http://localhost:' + server.info.port);
+                    client.connect(() => {
+
+                        client.request('/', (err, payload, statusCode, headers) => {
+
+                            expect(err).to.not.exist();
+                            expect(payload).to.equal({ a: 1, b: 2 });
+                            expect(statusCode).to.equal(200);
+
+                            client.disconnect();
+                            server.stop(done);
+                        });
+                    });
+                });
+            });
+        });
+
+        it('ignores previously stringified value when no content-type header', (done) => {
+
+            const server = new Hapi.Server();
+            server.connection();
+            server.register({ register: Nes, options: { auth: false } }, (err) => {
+
+                expect(err).to.not.exist();
+
+                server.route({
+                    method: 'GET',
+                    path: '/',
+                    handler: function (request, reply) {
+
+                        return reply(JSON.stringify({ a: 1, b: 2 }));
+                    }
+                });
+
+                server.ext('onPreResponse', (request, reply) => {
+
+                    request.response._contentType = null;
+                    return reply.continue();
+                });
+
+                server.start((err) => {
+
+                    expect(err).to.not.exist();
+                    const client = new Nes.Client('http://localhost:' + server.info.port);
+                    client.connect(() => {
+
+                        client.request('/', (err, payload, statusCode, headers) => {
+
+                            expect(err).to.not.exist();
+                            expect(payload).to.equal('{"a":1,"b":2}');
+                            expect(statusCode).to.equal(200);
+
+                            client.disconnect();
+                            server.stop(done);
                         });
                     });
                 });
@@ -365,7 +445,6 @@ describe('Socket', () => {
 
                         const handler = (update) => {
 
-                            client.disconnect();
                             server.stop(done);
                         };
 
@@ -527,7 +606,7 @@ describe('Socket', () => {
                     client.on('message', (data, flags) => {
 
                         const message = JSON.parse(data);
-                        expect(message.payload).to.deep.equal({
+                        expect(message.payload).to.equal({
                             error: 'Bad Request',
                             message: 'Cannot parse message'
                         });
@@ -601,7 +680,7 @@ describe('Socket', () => {
                     client.on('message', (data, flags) => {
 
                         const message = JSON.parse(data);
-                        expect(message.payload).to.deep.equal({
+                        expect(message.payload).to.equal({
                             error: 'Bad Request',
                             message: 'Message missing id'
                         });
@@ -695,7 +774,7 @@ describe('Socket', () => {
                             return;
                         }
 
-                        expect(message.payload).to.deep.equal({
+                        expect(message.payload).to.equal({
                             error: 'Bad Request',
                             message: 'Message missing method'
                         });
@@ -751,7 +830,7 @@ describe('Socket', () => {
                             return;
                         }
 
-                        expect(message.payload).to.deep.equal({
+                        expect(message.payload).to.equal({
                             error: 'Bad Request',
                             message: 'Message missing path'
                         });
@@ -807,7 +886,7 @@ describe('Socket', () => {
                             return;
                         }
 
-                        expect(message.payload).to.deep.equal({
+                        expect(message.payload).to.equal({
                             error: 'Bad Request',
                             message: 'Unknown message type'
                         });
@@ -850,7 +929,7 @@ describe('Socket', () => {
                     client.on('message', (data, flags) => {
 
                         const message = JSON.parse(data);
-                        expect(message.payload).to.deep.equal({
+                        expect(message.payload).to.equal({
                             error: 'Bad Request',
                             message: 'Incorrect protocol version (expected 2 but received 1)'
                         });
@@ -888,7 +967,7 @@ describe('Socket', () => {
                     client.on('message', (data, flags) => {
 
                         const message = JSON.parse(data);
-                        expect(message.payload).to.deep.equal({
+                        expect(message.payload).to.equal({
                             error: 'Bad Request',
                             message: 'Incorrect protocol version (expected 2 but received none)'
                         });
@@ -937,15 +1016,15 @@ describe('Socket', () => {
                             expect(err).to.not.exist();
                             const handler = (update) => {
 
-                                client.unsubscribe('/5');
-                                client.unsubscribe('/6');
+                                client.unsubscribe('/5', null, Hoek.ignore);
+                                client.unsubscribe('/6', null, Hoek.ignore);
 
                                 client.message('a', (err, message) => {
 
                                     expect(err).to.not.exist();
                                     const listener = server.connections[0].plugins.nes._listener;
                                     const match = listener._router.route('sub', '/5');
-                                    expect(match.route.subscribers._items).to.deep.equal({});
+                                    expect(match.route.subscribers._items).to.equal({});
 
                                     client.disconnect();
                                     server.stop(done);
@@ -983,22 +1062,26 @@ describe('Socket', () => {
 
                     expect(err).to.not.exist();
                     const client = new Nes.Client('http://localhost:' + server.info.port);
+                    client.onError = Hoek.ignore;
                     client.connect(() => {
 
                         const handler = (update) => {
 
-                            client.unsubscribe('/6');
-                            client._send({ type: 'unsub', path: '/6' });
-
-                            client.message('a', (err, message) => {
+                            client.unsubscribe('/6', null, (err) => {
 
                                 expect(err).to.not.exist();
-                                const listener = server.connections[0].plugins.nes._listener;
-                                const match = listener._router.route('sub', '/6');
-                                expect(match.route.subscribers._items).to.deep.equal({});
+                                client._send({ type: 'unsub', path: '/6' });
 
-                                client.disconnect();
-                                server.stop(done);
+                                client.message('a', (err, message) => {
+
+                                    expect(err).to.not.exist();
+                                    const listener = server.connections[0].plugins.nes._listener;
+                                    const match = listener._router.route('sub', '/6');
+                                    expect(match.route.subscribers._items).to.equal({});
+
+                                    client.disconnect();
+                                    server.stop(done);
+                                });
                             });
                         };
 

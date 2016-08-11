@@ -1,4 +1,4 @@
-# nes Protocol v2.1.x
+# nes Protocol v2.3.x
 
 ## Message
 
@@ -21,9 +21,11 @@ Each outgoing request from the server to the client contains:
     - `'hello'` - connection initialization and authentication.
     - `'request'` - endpoint request.
     - `'sub'` - subscribe to a path.
+    - `'unsub'` - unsubscribe from a path.
     - `'message'` - send custom message.
     - `'update'` - a custom message push from the server.
     - `'pub'` - a subscription update.
+    - `'revoke'` - server forcedly removed the client from a subscription.
 - additional type-specific fields.
 
 If a message is too large to send as a single WebSocket update, it can be chunked into multiple
@@ -301,7 +303,7 @@ For example:
 
 ## Unsubscribe
 
-Flow: `client` -> `server`
+Flow: `client` -> `server` -> `client`
 
 Unsubscribe from a server subscription:
 - `type` - set to `'unsub'`.
@@ -318,7 +320,19 @@ For example:
 }
 ```
 
-There is no server response.
+The server response includes:
+- `type` - set to `'sub'`.
+- `id` - the same `id` received from the client.
+- the [standard error fields](#errors) if failed.
+
+For example:
+
+```js
+{
+    type: 'unsub',
+    id: 5
+}
+```
 
 ## Update
 
@@ -352,6 +366,28 @@ A message sent from the server to all subscribed clients:
     path: '/box/blue',
     message: {
         status: 'closed'
+    }
+}
+```
+
+## Revoked
+
+Flow: `server` -> `client`
+
+The server forcefully removed the client from a subscription:
+- `type` - set to `'revoke'`.
+- `path` - the subscription path.
+- `message` - any value (string, object, etc.). An optional last message sent to the client for the
+  specified subscription.
+
+For example:
+
+```js
+{
+    type: 'revoke',
+    path: '/box/blue',
+    message: {
+        reason: 'channel permissions changed'
     }
 }
 ```
