@@ -8,7 +8,7 @@ const Hapi = require('hapi');
 const Hoek = require('hoek');
 const Lab = require('lab');
 const Nes = require('../');
-const Ws = require('ws');
+const Ws = require('uws');
 
 
 // Declare internals

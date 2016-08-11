@@ -21,6 +21,7 @@
     "iron": "4.x.x",
     "items": "^2.1.x",
     "joi": "9.x.x",
+    "uws": "^0.7.9",
     "ws": "1.x.x"
   },
   "peerDependencies": {
@@ -34,7 +35,9 @@
     "lab": "10.x.x"
   },
   "babel": {
-    "presets": ["es2015"]
+    "presets": [
+      "es2015"
+    ]
   },
   "scripts": {
     "build-client": "mkdir -p dist; babel lib/client.js --out-file dist/client.js",
